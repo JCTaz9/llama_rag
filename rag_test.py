@@ -61,36 +61,34 @@ class Pipeline:
         pass
 
     def pipe(
-        self, user_message: str, model_id: str, messages: List[dict], body: dict
-    ) -> Union[str, Generator, Iterator]:
-        # This is where you can add your custom RAG pipeline.
-        # First, retrieve relevant information from the Llama Index, then use R2R to rerank the results.
+    self, user_message: str, model_id: str, messages: List[dict], body: dict
+) -> Union[str, Generator, Iterator]:
+    # Start by querying the Llama Index
+    query_engine = self.index.as_query_engine(streaming=True)
+    llama_response = query_engine.query(user_message)
 
-        print(messages)
-        print(user_message)
-
-        # Step 1: Retrieve relevant documents from Llama Index
-        query_engine = self.index.as_query_engine(streaming=True)
-        llama_response = query_engine.query(user_message)
-
-        # Step 2: Send the Llama Index results to R2R for reranking
-        response_gen = []
-        for response_chunk in llama_response.response_gen:
-            response_gen.append(response_chunk)
-        
+    # Collect the streaming response from Llama Index
+    response_gen = []
+    for response_chunk in llama_response.response_gen:
+        response_gen.append(response_chunk)
+    
+    # Send the response to R2R for reranking
+    try:
         r2r_response = requests.post(
             self.valves.R2R_BASE_URL + "/rerank",
             json={"query": user_message, "documents": response_gen, "top_k": 5}
         )
+        r2r_response.raise_for_status()
+    except requests.exceptions.RequestException as e:
+        return f"Error querying R2R system: {e}"
 
-        if r2r_response.status_code != 200:
-            return f"Error querying R2R system: {r2r_response.status_code}"
+    # Get the reranked documents
+    reranked_docs = r2r_response.json().get("documents", [])
 
-        reranked_docs = r2r_response.json().get("documents", [])
+    # Format the response to return
+    result = "Top 5 reranked documents:\n"
+    for i, doc in enumerate(reranked_docs, 1):
+        result += f"{i}. {doc['title']} - {doc['snippet']}\n"
 
-        # Step 3: Format and return the reranked results
-        result = "Top 5 reranked documents:\n"
-        for i, doc in enumerate(reranked_docs, 1):
-            result += f"{i}. {doc['title']} - {doc['snippet']}\n"
+    return result
 
-        return result
